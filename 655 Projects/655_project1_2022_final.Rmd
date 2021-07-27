@@ -1,0 +1,313 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+####Exploring Longitudinal Data from the    
+####Childhood Asthma Management Program (CAMP)    
+####Biostat655 Project1 2022
+######Elizabeth Colantuoni, Jisoo Kim, Emily Scott, Scott Zeger
+######6/9/2021
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(nlme)
+```
+
+###### Introduction
+The Childhood Asthma Management Program (CAMP) was a multicenter, randomized controlled trial designed to determine the long-term effects on asthma of three treatments: budesonide, nedocromil or placebo on pulmonary function among children 5-12 years of age. The study participarnts were enrolled between 1993 and 1995. The primary outcome  was *forced expiratory volume at one second (FEV1)* measured soon after the oral administration of the treatment using a bronchodilator. Children were randomized to receive one of the three treatments and then followed for 4 years in the primary study. A subset of children were followed for an additional 5 years in
+the continuation study. The primary outcome was measured at baseline and then at 2, 4, 12, 16, 24, 28, 36, 40 and 48 months after randomization during the primary study. During the continuation study, additional FEV1 measures were made at 52, 60, 72, 84, 96 and 108 months from randomization.
+
+References:
+
+1. The Childhood Asthma Management Program (CAMP): Design, Rationale, and Methods. Controlled
+Clinical Trials 1999; 20:91-120.
+2. Long-Term Effects of Budesonide or Nedocromil in Children with Asthma. New England Journal of
+Medicine 2000;343:1054-63.
+
+##### Data Description
+The dataset comprises a random sample of 695 children from CAMP. The dataset includes the primary outcome (post-bronchodilator FEV1), treatment group, as well as baseline characteristics of the children.
+The comma delimited files *camp_primary.csv* and *camp_continuation.csv* hold the data from months 0 through 48 and 50 through 108, respectively.
+
+The following variables are available for each child visit:
+
+* *id*: participant ID
+* *trt*: treatment group: 0-placebo; 1-budesonide; 2-nedocromil
+* *age_rz*: age in years at randomization 
+* *gender*: 0-male; 1-female
+* *ethnicity*: 0-White; 1-Black; 2-Hispanic; 3-Other
+* *posfev*: primary outcome: post-bronchodilator forced experiratory volume in one second (FEV1) in liters
+* *visit*: visit number 
+* *visitc*: months since randomization 
+* *fdays*: days since randomization of visit
+```{r read the primary study dataset into R}
+setwd("/Users/szeger/OneDrive - Johns Hopkins University/professional/courses/bio650s/bio655.2022/projects/project1")
+#
+#
+df = read.csv(file = "camp_primary.csv")
+df = df %>%
+  rename(female=gender, fev=POSFEV)
+head(df)
+dim(df); dim(df[complete.cases(df),])
+df.cc=df[complete.cases(df),]
+```
+An first step in a data analysis project is to become more familiar with the database. Here, we can see there are  want to check that each variable has the expected type: numeric or character; continuous or discrete; learn about the shape of the distribution of the key continuous variables; discover unusual values that might reflect real rare events or possibly coding errors. We look at the frequencies of the discrete variables and examine the relationships among key variables, for example by visualizing joint frequencies or distributions of pairs of variables. 
+
+Here are a few simple tabular and visual displays to explore the dataset. 
+```{r make exploratory displays for checking data validity}
+# tabulate the number of observations over time for each treatment group
+tab1=table(df$trt,df$visit)
+tab1.m1=table(df$visit)
+tab1.m2=table(df$trt)
+tab1.all=rbind(tab1,tab1.m1)
+rownames(tab1.all)[4]="total"
+tab1.all=cbind(tab1.all,c(tab1.m2,sum(tab1.m2)))
+colnames(tab1.all)[11]="total"
+print(tab1.all)
+#
+temp=t(tab1.all);temp=temp[-nrow(temp),-ncol(temp)]
+matplot(temp,type="b",pch=c("0","1","2"),ylab="Numbers",xlab="Visit",ylim=c(0,300),las=1)
+#
+```
+
+##### Question, Question, Question
+In real estate, the 3 most important considerations are: location, location, location. In statistical analysis, the 3 most important are: question, question, question.
+
+The question for this analysis of the  of the primary CAMP study is: *are greater improvements in pulmonary function
+over time with the use of budesonide or nedocromil compared to placebo in children with asthma*. 
+
+In randomized trials, especially those used for licensing interventions, the statistical analysis plan would be pre-specified, such that an analyst would conduct a pre-specified exploratory and confirmatory analysis of the data. Pre-specified analysis plans are good practice both in experiments and observational studies. However, we will be analyzing the data of this trial with the primary objective above but without a pre-specified analysis plan to allow you to gain experience exploring the mean, variance and
+correlation in longitudinal data, as well as specifying, implementing and interpreting regression models for longitudinal data.
+
+##### Visualizing longitudinal data
+As with ordinary regression, in Longitudinal data analysis (LDA), we also seek to describe the conditional distribution $[Y|X]$ of outcome variables $(Y)$ given predictor variables $(X)$. Because the outcome $Y=(Y_1,...Y_{n_i})$ is an $n_i x 1$ vector of repeated measurements for person $i$, there are many conditional means to study. These include: 
+* $[Y_{ij}|X_{ij}]$, the conditional distribution of the outcome at time $t_{ij}$ for person $i$ given the predictor variables at the same time. *Marginal* models focus on the conditional mean of this distribution.
+
+* $[Y_{ij}|Y_{i1},\ldots,Y_{ij-1},X_{ij}]$, the conditional distribution of outcome $j$ for person $i$ given the predictor variables at the same time and the history of prior responses. *Transition* models focus on this mean.
+
+* $[Y_{ij}|b_i,X_{ij}]$, the conditional distribution of outcome $j$ for person $i$ given the predictor variables at the same time and unobserved random effects $b_i$ that represent latent variables that explain the heteogeneity in the patterns of responses among people. *Random effects or mixed* models focus on this conditional mean.
+
+An starting point is to visualize the conditional mean response of interest and covariance given time-independent (e.g. baseline) predictors:
+
+* $E(Y_i|X_{i0})$
+
+* $\mbox{Cov}(Y_i|X_{i0})$.
+
+First, let's make a picture of the observed vector of data over time. The *spaghetti plot* plots $Y_{ij}$ versus $t_{ij}$ for all of the observations $j=1,\ldots,n_i$ for each person $i=1,\ldots,m$, connecting tne repeated values on the same person with a line. Note it is important to use thin, transparent lines given there are 659 persons each with 10 or more observations.
+
+```{r spaghetti plot, echo=FALSE}
+ggplot(df,aes(x=visitc,y=fev,group=id,col=as.factor(female))) + 
+  geom_line(alpha=0.1) + xlab("Months since randomization") + ylab("FEV1") + labs(title ="Spaghetti Plot of FEV1 by Sex")
+```
+
+##### Examining the data for evidence of treatment differences
+To begin to investigate the treatment effects, we can make the spaghetti plot identifying the treatment group by color and adding the estimates of the mean curvse for each of the three treatment groups.
+
+There is little difference between the estimated mean curves for the treatment groups. Even from this simple visualization, we can see that whatever treatment differences are ultimately estimated, they are small relative to the natural variation among persons.
+
+```{r spaghetti plot with treatment means, echo=FALSE}
+ggplot(df,aes(x=visitc,y=fev,group=id,col=as.factor(trt))) + 
+  geom_line(alpha=0.05) + xlab("Visit") + ylab("FEV1") + labs(title ="Spaghetti Plot of FEV1 by Treatment Group") +
+  geom_smooth(aes(x=visitc,y=fev,group=as.factor(trt)))
+```
+
+##### Boxplots of treatment differences over time
+The conditional distribution of *fev* given follow-up time and treatment group can be pictured in greater detail by comparing boxplots. Below is an example. At each visit/group combination, we show the median (horizontal line), mean (point), interquartile range (box) and outliers. Note the similarity among the means across groups at each time, relative to the variation among people. Note also that the variation (spread) among persons within a group (length of the boxes) seems to increase with follow-up time.  
+```{r boxplots by time and treatment}
+# distribution of the outcome fev versus visit for the three treatment groups
+df_summaries <- df.cc %>% 
+  mutate(visitc_new = ifelse(trt == 0, visitc - 0.5,ifelse(trt == 1, visitc, visitc + 0.5))) %>%
+  group_by(visitc_new) %>%
+  summarize(mean_fev = mean(fev),
+            sd_fev = sd(fev),
+            n = n())
+df.cc %>%
+  mutate(visitc_new = ifelse(trt == 0, visitc - 0.5,
+                        ifelse(trt == 1, visitc, visitc + 0.5))) %>%
+  ggplot(aes(x=visitc_new, y=fev, group = visitc_new)) + 
+    geom_boxplot(aes(fill = as.factor(trt))) +
+    xlab("Month of visit") + ylab("FEV1") + 
+    ggtitle("Boxplots of FEV1 by Treatment Group and Follow-up Time") + theme_bw() + 
+    geom_pointrange(data=df_summaries,size=0.1,color="black",
+        aes(x = visitc_new, 
+            y = mean_fev, 
+            ymin = mean_fev - 2*sd_fev/sqrt(n), 
+            ymax = mean_fev + 2*sd_fev/sqrt(n)))
+```
+##### Add pictures and text to describe the correlation among repeated measures on a person
+1. Pairs plot of resdiduals at the different times
+2. Autocorrelation matrix as table and heatmap
+3. Autocorrelation function as table and graph
+
+
+
+
+##### Longitudinal data models
+In this section, we will fit a series of regression models to continue our exploration of the $E(Y_{ij}|X_{ij})$. To start, let's ignore the autocorrelation among repeated observations for each individual and use ordinary least squares (OLS). For the `r length(unique(df.cc$id))` unique children, their median number of observations is `r median(table(df.cc$id))` (10-90 percentiles: `r quantile(table(df.cc$id),probs=c(0.10,0.90))`. Hence, the OLS estimates of the regression coefficients are reasonably unbiased. But the inferences about the true coefficients are not correct because they are based upon the false assumption that observations, especially those from the same person, are independent of one another. 
+
+The model must adequately represent the scientific question. In this case, we want to learn from the study how the mean *fev* *trajectory* is different among the three treatment groups. We do not want to assume that the trajectories are linear so should use a model that allows for a different curvilinear relationship with follow-up time in each group. 
+
+A relatively simple model that fits these requirements is a quadratic function of follow-up time. This is accomplished by including two time predictor variables $(t, t^2)$ and the interaction of these time variables with indicators for the 3 groups. 
+
+Because the study is a randomized trial, we know that the three groups have the same expected value at time 0. Recall the main effects of treatment are defined to be the difference in themean response for Groups 1 and 2 relative to the control at time 0The implication of this prior knowledge is that we know the regression coefficients for the main effects of treatment are 0. So we should not estimate it in our model. This case is an example were we want the interaction between time and group, but not the main effect for group in the model. So our proposed model for the conditional mean of $Y$ given $X$ is
+\[
+E(Y_{ij}|X_{ij}) = \beta_0 + (t \beta_{1.1}+ t^2 \beta_{1.2}) + 1_{\{group=1\}}(t \beta_{2.1}+ t^2 \beta_{2.2}) + 1_{\{group=2\}}(t \beta_{3.1}+ t^2 \beta_{3.2})
+\]
+Here, $t \beta_{1.1}+ t^2 \beta_{1.2}$ is a smooth (quadratic) function of time for the control group mean *fev* and $t \beta_{2.1}+ t^2 \beta_{2.2}, t \beta_{3.1}+ t^2 \beta_{3.2}$ are the differences between groups 1 and 2 versus control for the two treatment groups.
+```{r fit least square}
+df.cc = df.cc %>% mutate(time1=(visitc/48),time2=time1*time1)
+#
+reg.ols1 = lm(data=df.cc,fev ~ time1 + time2 + (time1 + time2):as.factor(trt))
+sum.ols1=summary(reg.ols1)
+sum.ols1
+reg.ols2 = lm(data=df.cc,fev ~  (time1+time2)*as.factor(trt))
+sum.ols2=summary(reg.ols2)
+sum.ols2
+#
+```
+
+##### OLS Results
+The control group has a positive slope increasing `r coefficients(reg.ols1)[2]` liters over the 4 year period. This represents an increase of `r coefficients(reg.ols1)[2]/coefficients(reg.ols1)[1]` relative to the common baseline level that is estimated for all three groups by the model intercept. The difference in lung growth between Group 1 and control is negligble at the beginning of follow-up as evidenced by the slope of `r coefficients(reg.ols1)[4]` for the Group 1 by time interactions. However, the negative coefficient for the quadratic term is relatively larger and negative meaning that Group 1 loses ground relative to control over time. Similar results are seen for the comparison of Group 2 with control. .
+
+Because the repeated observations for a child are not independent and because *OLS* assumes they are, inferences from *OLS* are invalid. So we can not trust the OLS standard errors, p-values, confidence intervals or tests of hypotheses. Said another way, the *OLS* assumes there is not heterogeity in the true growth rates among children and that any apparent differences among the children's levels and trajectories are due entirely to random measurement error. This critical assumption is false.
+
+A second incorrect assumption is that the variance of the measurement errors is constant for times x gruopus. But we can see in the boxplots and spaghetti plots that the variance increases as childrens' lung capacity grows. This makes sense because lung function grows at different rates among children so the heterogeneity among them in *fev* is likely to increase with time.
+
+We can retain the same model for the mean because it addresses our question, but make a more valid assumption about the *autocorrelation* among repeated observations for a child. Once, we choose that assumption, we can use *generalized least squres* or *GLS* to estimate the growth rates for the three treatment groups while accounting for the autocorrelation and unequal variances. If the repeated measures on a child were actually independent but with variance that changed over time, we could use *weighted least squares* or *WLS* instead of *OLS* or *GLS*. (So *WLS* is a special case of *GLS* and *OLS* is a special case of *WLS*; that is *GLS* $\supseteq$ *WLS* $\supseteq$ *OLS*.)
+
+##### Generalized Least Squares
+
+To account for the correlation and unequal variances, we need to simultaneously model the mean and covariance of the vector of outcomes for each individual as a function of the covariates $X$. Thus far, we are relatively satisfied with our model for the mean. On the other hand, the *OLS* model for the $n_i \times n_i$ matrix $\mbox{var}(Y_i|X_i) = \Sigma_i$ can be written $\Sigma_i = \sigma^2 I_{n_i})$. To see this fact, recall the $(j,k)$-element of $\Sigma_i$ is the covariance of $Y_{ij}$ with $Y_{ik}$. The diagonal entries in $\Sigma_i$, where $j=k$, are the variances of the observations. The off-diagonal elements are the covariances between each pair of responses. Because the *OLS* model assumes constant variances $\sigma^2$ and pair-wise independence, it corresponds to assuming $\Sigma_i = \sigma^2 I_{n_i}$.
+
+We will discuss several parsimonious models for covariance matrices later in the course. In this problem where $n_i = n$ and the observation times are the same for all individuals,  we can assume $\Sigma_i = \Sigma$ for all $i$ and estimate the $n$ variances and $n(n-1)/2$ covariances without making any further simplifying assumptions. We can estimate the covariance matrix using
+\[
+\hat{\sigma}_{jk} = \hat{cov}(Y_{ij},Y_{ik}) = \frac{1}{m}\Sigma_{i=1}^m (y_{ij}-x_{ij}\hat{\beta})(y_{ik}-x_{ik}\hat{\beta})
+\]
+where $\hat{\beta}$ are the estimated regression coefficients, say from *OLS*.
+
+Given an estimator $\hat{\Sigma}$, how do we then get the *WLS* estimate of $\beta$? Recall that *OLS* maximizes the likelihood of the responses as a function of the unknown $\beta$s. Assuming the responses follow a Gaussian distribution, maximizing the likelihood of the data corresponds to minimizing the sum of squares of the residuals.
+
+The generalized regression model can be written
+$Y_i = X_i \beta + \epsilon_i$ with $\mbox{var}(Y_i|X_i) = \Sigma.$ Let $L$ be an $n \times n$ matrix satisfying $\Sigma^{-1} = LL$. Since multiplying $L$ by itself gives $\Sigma^{-1}$, we say $L=\Sigma^{-1/2}$.  If we multiple the regression model above by $L$, we get $LY_i = LX_i \beta + L\epsilon_i$ where $var(L\epsilon_i) = L\Sigma L'= I$. So we now have a regression of $LY_i$ on $LX_i$ with the original regression coefficients $\beta$ and errors $L\epsilon_i$ that are independent and have common variance 1. Multiply the $Y$s and $X$s by $L$ decorrelates them and standardizes their variances. So, we can use *OLS* to regress $LY_i$ on $LX_i$. Doing so is called *generalized least squares*. In practice, one needs to get an initial estimate of $\beta$ to get a estimate of $\Sigma$, then we iteratively use the $\hat{\Sigma}$ to get a better estimate of $\beta$ and so on until the estimates do not change. 
+
+The *GLS* results give unbiased estimates of the true regression coefficients *and of their uncertainties*. Let's see how this turns out for the CAMP data.
+
+```{r fit model using generalized least squares}
+#
+#
+reg.gls1 = gls(data=df.cc,
+               fev ~ time1 + time2 + (time1 + time2):as.factor(trt),
+               correlation=corSymm(form=~visit|id)
+               )
+sum.gls1 = summary(reg.gls1)
+sum.gls1
+reg.gls2 = gls(data=df.cc,
+               fev ~ (time1+time2)*as.factor(trt),
+               correlation=corSymm(form=~visit | id)
+               )
+sum.gls2 = summary(reg.gls2)
+sum.gls2
+#
+#
+# make a table to compare ols to gls for model 2
+#
+result1=cbind(
+  sum.ols1$coefficients[,1:2],
+  as.vector(sum.gls1$coefficients),
+  as.vector(sqrt(diag(sum.gls1$varBeta)))
+  )
+result1=cbind(result1,result1[,2]/result1[,4])
+colnames(result1)=c("est.ols","se.ols","est.gls","se.gls","se.o/se.g")
+rownames(result1)=paste("x",1:nrow(result1),sep="")
+
+#
+result2=cbind(
+  sum.ols2$coefficients[,1:2],
+  as.vector(sum.gls2$coefficients),
+  as.vector(sqrt(diag(sum.gls2$varBeta)))
+  )
+result2=cbind(result2,result2[,2]/result2[,4])
+colnames(result2)=c("est.ols","se.ols","est.gls","se.gls","se.o/se.g")
+rownames(result2)=paste("x",1:nrow(result2),sep="")
+#
+# display predicted values from 4 models
+pred.ols1=predict(reg.ols1)
+pred.ols2=predict(reg.ols2)
+pred.gls1=predict(reg.gls1)
+pred.gls2=predict(reg.gls2)
+df.cc=cbind(df.cc,pred.ols1,pred.ols2,pred.gls1,pred.gls2)
+# # check predictions
+# ggplot(data=df.cc,aes(x=pred.gls1,y=pred.gls2)) + geom_jitter(aes(color=as.factor(trt)))
+
+#
+p1=ggplot(data=df.cc,aes(x=visitc, y =fev, group=id)) + geom_line(alpha=0.01) + xlab("") + ylab("FEV") + geom_line(aes(x=visitc,y= pred.ols1,col=as.factor(trt))) + ylim(c(1.5,3)) + theme(legend.position="none")
+p2=ggplot(data=df.cc,aes(x=visitc, y =fev, group=id)) + geom_line(alpha=0.01) + xlab("") + ylab("") + geom_line(aes(x=visitc,y=pred.ols2,col=as.factor(trt))) +  ylim(c(1.5,3)) + theme(legend.position="none")
+p3=ggplot(data=df.cc,aes(x=visitc, y =fev, group=id)) + geom_line(alpha=0.01) + xlab("Months since randomization") + ylab("FEV") + geom_line(aes(x=visitc,y= pred.gls1,col=as.factor(trt))) + ylim(c(1.5,3)) + theme(legend.position="none")
+p4=ggplot(data=df.cc,aes(x=visitc, y =fev, group=id)) + geom_line(alpha=0.01) + xlab("Months since randomization") + ylab("") + geom_line(aes(x=visitc,y=pred.gls2,col=as.factor(trt))) +  ylim(c(1.5,3)) + theme(legend.position="none")
+gridExtra::grid.arrange(p1,p2,p3,p4,ncol=2,nrow=2)
+```
+Comparing the coefficient estimates from *OLS* and *GLS*, we see they are qualitatively similar but not exactly the same. This is because, in *GLS*, the data are weighted to decorrelate them and equalize their variances. So, *GLS* estimates are weighted versions of what is calculated in *OLS*. More about this later. More importantly, we see that the **reported** standard errors of the coefficients from *OLS* and *GLS* are very different as are the t-statistics and p-values. This is because the *OLS* values are invalid and the *GLS* estimates are valid. How wrong can *OLS* be. In this case, the ratios of standard errors for the 7 coefficients are: `r round(result1[,5],1)`. Note that *OLS* standard errors understate the uncertainy for the intercept by a factor or 40% and overestimate the uncertainty for the time variables and their interactions with treatment by a factor of 3. These are standard error ratios; the *OLS* variances are incorrect by factors that are the squares of the ratios above. When *OLS* is off by a variance factor of 10, it thinks it has only 1/10 as many independent observations than it really has. This is because trends are estimated more precisely with positively correlated repeated measures over time than with independent values. 
+
+Finally, it is important to distinguish what *OLS* **incorrectly reports** from its **true standard error**. As we have seen, the reported error can over or under-estimate the more valid standard error for *GLS*. Another key fact is that the true standard error of *OLS* is always bigger than the true standard error of *GLS* when the correlation assumption in the *GLS* is closer to the truth than is the independence assumption. That is, *GLS*, by weighting the data, makes better us of the available information in the data than does *OLS*. We say that *GLS* is more *efficient*.  The relative efficiency of two estimators is measured by the ratio of their respective true (not incorrectly reported) variances.
+
+In summary, assuming the repeated measures on individuals are independent (using *OLS*) when they are not results in two mistakes. First, the reported standard errors, confidence intervals and tests of hypotheses are invalid. You will incorrectly report the strength of evidence for addressing your question. Sometimes claiming too much precision, other times too little.  Second, you will have made inefficient use of the available data. A better analyst who accounts for the autocorrelation will use all of the available information; you will have discarded some of it.
+
+##### Looking under the hood at false inferences and inefficiencies
+
+When we inadvisedly rely on *OLS* in the presence of autocorrelation, how do we know whether we are over or under-reporting the undertainties in our regression estimates?  And, how inefficient will the *OLS* estimates be relative to *GLS* estimates? The answers to both questions depend on two factors: (1) the question being asked, that is the predictor variables $X$ and on the nature of the size and sign of the autocorrelation.
+
+In the prior section, we saw the reported standard error was too small for the intercept and too big for the estimates of time trends or differences in these trends across groups. To illustrate further, we can perform a few simple experiments where we can get exact answers to both questions for a variety of situations. 
+
+In Experiment 1, we consider a the basic problem of estimating and intecept and slope using correlated data for individuals. We further assume that each person has the same design matrix $X_i=X$ with an odd number $n$ of observations per person at times $[-n/2],...,-1,0,1,...,[n/2].$ Finally, we assume a known, *stationary* autocovariance matix $V_i = V$ where $V$ is an $n \times n$ matrix with $V_{jk} = var(Y_{ij}, Y_{ik}) = \rho(\vert j-k\vert).$ We can vary assumptions about $n$ and $\rho(u), u=1,...,n-1.$  In this experiment, we do not allow the variance to change over time so fix it at 1.0.
+
+Below find a matrix with the reporting three variances for the intercept and the slope: (1) the incorrect reported variance from *OLS* (Oreport); (2) the true variance of the *OLS* estimate (Otrue); and (3) the true variance of the optimal *GLS* estimate (Gtrue). The table also includes the ratio of the reported to actual variance of the *OLS* and the inefficiency of *OLS* which is the ratio of the variance of the *OLS* to *GLS* estimates. For example, *OLS* reports a variance for the slope that is nearly twice the actual variance but provides an estimate whose true variance is 6.2% less efficient that from *GLS*.
+
+The second experiment is like the first except we change the design matrix to include two groups. The question is whether the intercepts and slopes are the same between the groups.
+```{r mini-experiments}
+#  Experiment 1: provide number of observations per person, rho, a vector of length n-1 with the autocorrelation function and it looks at the relative efficiency of OLS vs GLS for estimating an intercept and slope
+n=9
+x=matrix(c(rep(1,n),1:n),ncol=2,nrow=n)
+x[,2]= x[,2]-mean(x[,2])
+#rho=rep(.9,n-1)
+rho=c(seq(from=95, to=74,-3))/100
+#assign(paste("v.",as.character(n),as.character(floor(rho[1]*10)),sep=""),diag(n-1))
+v.99=diag(n)
+for (j in 1:(n-1)) {v.99[abs(row(v.99)-col(v.99))==j]=rho[j]}
+#
+v.report.ols=solve(t(x)%*%x)
+v.gls=solve(t(x)%*%solve(v.99)%*%x)
+v.actual.ols = v.report.ols%*% (t(x)%*%v.99%*%x)%*%v.report.ols
+#
+result3=cbind(diag(v.report.ols),diag(v.actual.ols),diag(v.gls),diag(v.report.ols)/diag(v.actual.ols),diag(v.actual.ols)/diag(v.gls))
+rownames(result3) = c("intercept","slope")
+colnames(result3)=c("Oreport","Otrue","Gtrue","Or/Ot","Ot/Gt")
+round(result3,5)
+#
+#
+#  Experiment 2: provide number of observations per person, rho, a vector of length n-1 with the autocorrelation function and it looks at the relative efficiency of OLS vs GLS for estimating an intercept and slope for each of two groups. The parameterization is in terms of the intercept/slope for reference group and differences between the two groups
+n=9
+x=matrix(c(rep(1,n),1:n),ncol=2,nrow=n)
+x[,2]= x[,2]-mean(x[,2])
+group=c(rep(0,n),rep(1,n))
+xmat=rbind(x,x)
+xmat=cbind(xmat,group,group*xmat[,2])
+x=xmat
+colnames(x)=paste("x",1:ncol(x),sep="")
+#rho=rep(.9,n-1)
+rho=c(seq(from=95, to=74,-3))/100
+#assign(paste("v.",as.character(n),as.character(floor(rho[1]*10)),sep=""),diag(n-1))
+v.99=diag(n)
+for (j in 1:(n-1)) {v.99[abs(row(v.99)-col(v.99))==j]=rho[j]}
+#
+vmat=matrix(0,ncol=2*n,nrow=2*n)
+vmat[1:n,1:n]=v.99; vmat[(n+1):(2*n),(n+1):(2*n)]=v.99
+round(solve(t(x)%*%x)*1000,0)
+round(solve(t(x)%*%solve(vmat)%*%x)*1000,0)
+```
+ 
